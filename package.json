@@ -1,0 +1,81 @@
+{
+  "name": "@runonflux/cardano-core",
+  "version": "0.1.0",
+  "description": "Pure-TypeScript Cardano transaction library: Icarus/BIP32-Ed25519 keys, Shelley and Byron addresses, span-preserving CBOR, Conway transactions, fees and min-ADA, coin selection, CIP-8 message signing and CIP-30 helpers. No WASM, two dependencies.",
+  "license": "MIT",
+  "author": "RunOnFlux",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/RunOnFlux/cardano-core.git"
+  },
+  "homepage": "https://github.com/RunOnFlux/cardano-core#readme",
+  "bugs": {
+    "url": "https://github.com/RunOnFlux/cardano-core/issues"
+  },
+  "keywords": [
+    "cardano",
+    "ada",
+    "cbor",
+    "cip-8",
+    "cip-30",
+    "bip32-ed25519",
+    "wallet"
+  ],
+  "type": "module",
+  "sideEffects": false,
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "LICENSE",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=20.19"
+  },
+  "scripts": {
+    "build": "rm -rf dist && tsc -p tsconfig.build.json",
+    "type-check": "tsc --noEmit",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "oracle": "CARDANO_ORACLE_CASES=10000 vitest run",
+    "corpus": "node scripts/fetch-corpus.mjs",
+    "prepublishOnly": "yarn type-check && yarn lint && yarn format:check && yarn test && yarn build",
+    "coverage": "vitest run --coverage"
+  },
+  "dependencies": {
+    "@noble/curves": "2.4.0",
+    "@noble/hashes": "2.4.0"
+  },
+  "devDependencies": {
+    "@emurgo/cardano-message-signing-nodejs": "1.1.0",
+    "@emurgo/cardano-serialization-lib-nodejs": "14.1.2",
+    "@eslint/js": "10.0.1",
+    "@types/node": "26.6.2",
+    "@vitest/coverage-v8": "5.0.1",
+    "eslint": "10.11.0",
+    "eslint-config-prettier": "10.1.8",
+    "eslint-plugin-prettier": "5.5.6",
+    "globals": "17.12.0",
+    "prettier": "3.9.9",
+    "typescript": "6.0.3",
+    "typescript-eslint": "8.70.1",
+    "vite": "8.3.0",
+    "vitest": "5.0.1"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}
