@@ -1,0 +1,22 @@
+{
+  "source": "api.koios.rest tx_cbor",
+  "fetched": "2026-09-29",
+  "transactions": 3110,
+  "recent": 2500,
+  "oldEpochs": [
+    210,
+    240,
+    260,
+    300,
+    330,
+    370,
+    420,
+    470,
+    510,
+    560,
+    620
+  ],
+  "voteTxs": 80,
+  "proposalTxs": 104,
+  "bytesGzipped": 2100656
+}
