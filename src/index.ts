@@ -230,6 +230,7 @@ export type {
 } from './cip30.js';
 export {
   assessCollateral,
+  collateralCheckOptions,
   collateralRisk,
   MIN_COLLATERAL_CAP,
   MAX_DEFAULT_COLLATERAL_CAP,
@@ -238,6 +239,7 @@ export {
 export type {
   CollateralAssessment,
   CollateralCheckOptions,
+  WalletCollateralOptions,
 } from './collateral.js';
 export { describeTransaction, totalOutflow, totalInflow } from './describe.js';
 export type {

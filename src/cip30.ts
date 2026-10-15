@@ -5,7 +5,7 @@ import { cArray, cBytes, cUint, encodeCbor } from './cbor/encode.js';
 import { CardanoError } from './errors.js';
 import { keyHash } from './keys.js';
 import type { Signer } from './keys.js';
-import { collateralRisk } from './collateral.js';
+import { assessCollateral, collateralCheckOptions } from './collateral.js';
 import type { ProtocolParams } from './params.js';
 import { verifyWitness, witnessFor } from './sign.js';
 import { decodeTransaction } from './tx/decode.js';
@@ -116,6 +116,18 @@ export interface WitnessSetOptions {
    * pays the collateral return.
    */
   readonly allowForeignCollateralReturn?: boolean;
+  /**
+   * Sign collateral inputs missing from `ownUtxos` once each is accounted for
+   * by `resolvedCollateral` (see `CollateralCheckOptions.allowUnvalued`): the
+   * wallet's own are valued and capped, others add nothing. The signers' keys
+   * count as the wallet's. An input missing from the lookup throws
+   * `COLLATERAL_UNRESOLVED` (retryable). Honoured only with `ownUtxos`.
+   */
+  readonly allowUnvaluedCollateral?: boolean;
+  /** Fresh lookup of the collateral inputs by outpoint, with address and value (read only with `allowUnvaluedCollateral`). */
+  readonly resolvedCollateral?: readonly Utxo[];
+  /** More key hashes the wallet signs with, besides `ownAddresses` and the signers (read only with `allowUnvaluedCollateral`). */
+  readonly ownKeyHashes?: readonly (string | Uint8Array)[];
 }
 
 /** Certificate kinds a Conway node cannot decode (pre-Conway genesis delegation and MIR). */
@@ -131,8 +143,10 @@ const OBSOLETE_CERTS = new Set([
  * Refuses (unless the matching opt-in is set): body fields or certificate
  * kinds this library does not understand, and obsolete pre-Conway
  * certificates (`UNSUPPORTED`); collateral that pays a foreign or missing
- * return, cannot be valued, or exceeds the cap (`COLLATERAL_AT_RISK`, see
- * `assessCollateral`). `options.ownAddresses` is required.
+ * return, cannot be valued (unless `allowUnvaluedCollateral` and every input
+ * is resolved), or exceeds the cap (`COLLATERAL_AT_RISK`, see
+ * `assessCollateral`); a collateral input missing from `resolvedCollateral`
+ * (`COLLATERAL_UNRESOLVED`, retryable). `options.ownAddresses` is required.
  */
 export async function signTxWitnessSet(
   tx: string | Uint8Array,
@@ -167,18 +181,24 @@ export async function signTxWitnessSet(
       );
     }
   }
-  const risk = collateralRisk(decoded, {
-    ownAddresses: options.ownAddresses,
-    ...(options.ownUtxos ? { ownUtxos: options.ownUtxos } : {}),
-    ...(options.maxCollateralAtRisk !== undefined
-      ? { maxCollateralAtRisk: options.maxCollateralAtRisk }
-      : {}),
-    ...(options.params ? { params: options.params } : {}),
-    ...(options.allowForeignCollateralReturn
-      ? { allowForeignReturn: true }
-      : {}),
-  });
-  if (risk) throw new CardanoError('COLLATERAL_AT_RISK', risk);
+  const collateral = assessCollateral(
+    decoded,
+    collateralCheckOptions(
+      options.ownAddresses,
+      options.params,
+      options,
+      // The keys about to sign authorise spending any input they lock.
+      options.allowUnvaluedCollateral
+        ? signers.map((s) => keyHash(s.publicKey))
+        : [],
+    ),
+  );
+  if (collateral.refusal) {
+    throw new CardanoError(
+      collateral.retryable ? 'COLLATERAL_UNRESOLVED' : 'COLLATERAL_AT_RISK',
+      collateral.refusal,
+    );
+  }
   const witnesses: VkeyWitness[] = [];
   for (const s of signers) {
     if (witnesses.some((w) => equalBytes(w.vkey, s.publicKey))) continue;
