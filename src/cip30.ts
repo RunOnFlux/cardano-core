@@ -116,6 +116,8 @@ export interface WitnessSetOptions {
    * pays the collateral return.
    */
   readonly allowForeignCollateralReturn?: boolean;
+  /** Sign collateral that cannot be valued (see `CollateralCheckOptions.allowUnvalued`). */
+  readonly allowUnvaluedCollateral?: boolean;
 }
 
 /** Certificate kinds a Conway node cannot decode (pre-Conway genesis delegation and MIR). */
@@ -131,8 +133,8 @@ const OBSOLETE_CERTS = new Set([
  * Refuses (unless the matching opt-in is set): body fields or certificate
  * kinds this library does not understand, and obsolete pre-Conway
  * certificates (`UNSUPPORTED`); collateral that pays a foreign or missing
- * return, cannot be valued, or exceeds the cap (`COLLATERAL_AT_RISK`, see
- * `assessCollateral`). `options.ownAddresses` is required.
+ * return, cannot be valued (unless `allowUnvaluedCollateral`), or exceeds the
+ * cap (`COLLATERAL_AT_RISK`, see `assessCollateral`). `options.ownAddresses` is required.
  */
 export async function signTxWitnessSet(
   tx: string | Uint8Array,
@@ -177,6 +179,7 @@ export async function signTxWitnessSet(
     ...(options.allowForeignCollateralReturn
       ? { allowForeignReturn: true }
       : {}),
+    ...(options.allowUnvaluedCollateral ? { allowUnvalued: true } : {}),
   });
   if (risk) throw new CardanoError('COLLATERAL_AT_RISK', risk);
   const witnesses: VkeyWitness[] = [];

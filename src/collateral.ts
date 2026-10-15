@@ -69,6 +69,14 @@ export interface CollateralCheckOptions {
    * Every other check, including the cap, stays in force.
    */
   readonly allowForeignReturn?: boolean;
+  /**
+   * Accept collateral that cannot be valued: an input not among `ownUtxos` with no
+   * `total_collateral` stated, when the return pays the wallet or there is none. Honoured only
+   * when `ownUtxos` is given (the caller looked and the input is not listed). The foreign-return
+   * check and the cap on valued collateral stay in force. Set it only after the user was told
+   * that the amount at risk is unknown.
+   */
+  readonly allowUnvalued?: boolean;
 }
 
 export interface CollateralAssessment {
@@ -170,8 +178,9 @@ export function assessCollateral(
   }
   if (!refusal) {
     if (atRisk === null) {
-      refusal =
-        "cannot tell how much collateral is at risk: a collateral input is not among the wallet's known UTXOs";
+      if (!(options.allowUnvalued && options.ownUtxos !== undefined))
+        refusal =
+          "cannot tell how much collateral is at risk: a collateral input is not among the wallet's known UTXOs";
     } else if (atRisk > cap) {
       refusal = `${atRisk} lovelace of collateral would be lost if the scripts fail (limit ${cap})`;
     }

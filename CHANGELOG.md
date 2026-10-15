@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.1 — 2026-10-15
+
+### Added
+
+- `signTxWitnessSet` option `allowUnvaluedCollateral` (and `assessCollateral` option `allowUnvalued`): sign collateral that cannot be valued (an input not among `ownUtxos`, no stated total) when the return is the wallet's own or absent. Honoured only when `ownUtxos` is given. The foreign-return refusal and the cap on valued collateral are unchanged. For wallets that show the user an "amount at risk unknown" warning and get an explicit override.
+
 ## 0.1.0 — 2026-09-30
 
 First release: the pure-TypeScript replacement for cardano-serialization-lib and cardano-message-signing in ZelCore. Includes the fixes from all five rounds of independent review, 2026-09-29 and 2026-09-30 ([AUDIT.md](./AUDIT.md) §9).

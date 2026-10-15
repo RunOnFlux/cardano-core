@@ -1,6 +1,6 @@
 {
   "name": "@runonflux/cardano-core",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Pure-TypeScript Cardano transaction library: Icarus/BIP32-Ed25519 keys, Shelley and Byron addresses, span-preserving CBOR, Conway transactions, fees and min-ADA, coin selection, CIP-8 message signing and CIP-30 helpers. No WASM, two dependencies.",
   "license": "MIT",
   "author": "RunOnFlux",
