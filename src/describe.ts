@@ -2,7 +2,8 @@ import { addressToString, parseAddress, parseAddressInput } from './address.js';
 import type { ParsedAddress } from './address.js';
 import { bytesToHex, equalBytes, hexToBytes } from './bytes.js';
 import { bech32Encode } from './encoding.js';
-import { assessCollateral } from './collateral.js';
+import { assessCollateral, collateralCheckOptions } from './collateral.js';
+import type { WalletCollateralOptions } from './collateral.js';
 import { MAINNET_DEFAULTS } from './params.js';
 import type { ProtocolParams } from './params.js';
 import { decodeTransaction } from './tx/decode.js';
@@ -58,6 +59,8 @@ export interface CollateralDescription {
   readonly cap: bigint;
   /** Why `signTxWitnessSet` refuses this transaction, or null. */
   readonly refusal: string | null;
+  /** Set (true) when the refusal may clear with a fresh `resolvedCollateral` (`COLLATERAL_UNRESOLVED`). */
+  readonly retryable?: true;
 }
 
 export interface TransactionDescription {
@@ -118,6 +121,14 @@ export interface DescribeOptions {
   readonly ownUtxos?: readonly Utxo[];
   /** Cap on collateral at risk (default `defaultCollateralCap(params)`), as `signTxWitnessSet` applies it. */
   readonly maxCollateralAtRisk?: bigint;
+  /** As `signTxWitnessSet` takes it, so `collateral` reports what signing would decide. */
+  readonly allowForeignCollateralReturn?: boolean;
+  /** As `signTxWitnessSet` takes it. Pass the signing keys in `ownKeyHashes` to match it exactly. */
+  readonly allowUnvaluedCollateral?: boolean;
+  /** As `signTxWitnessSet` takes it (read only with `allowUnvaluedCollateral`). */
+  readonly resolvedCollateral?: readonly Utxo[];
+  /** As `signTxWitnessSet` takes it (read only with `allowUnvaluedCollateral`). */
+  readonly ownKeyHashes?: readonly (string | Uint8Array)[];
 }
 
 function drepLabel(d: DRep): string {
@@ -325,14 +336,11 @@ export function describeTransaction(
   if (!d.isValid) warnings.push('marked invalid: collateral will be taken');
 
   // Collateral: at risk whatever `is_valid` says, because it is not signed.
-  const assessment = assessCollateral(d, {
-    ownAddresses: options.addresses ?? [],
-    params,
-    ...(options.ownUtxos ? { ownUtxos: options.ownUtxos } : {}),
-    ...(options.maxCollateralAtRisk !== undefined
-      ? { maxCollateralAtRisk: options.maxCollateralAtRisk }
-      : {}),
-  });
+  const collateralOptions: WalletCollateralOptions = options;
+  const assessment = assessCollateral(
+    d,
+    collateralCheckOptions(options.addresses ?? [], params, collateralOptions),
+  );
   const collateralReturn = d.body.collateralReturn
     ? describeOutput(d.body.collateralReturn)
     : undefined;
@@ -409,6 +417,7 @@ export function describeTransaction(
       atRiskLovelace: atRisk,
       cap: assessment.cap,
       refusal: assessment.refusal,
+      ...(assessment.retryable ? { retryable: true as const } : {}),
     },
     collateralAtRisk: atRisk,
     unknownBodyKeys: d.body.unknownFields.map((f) => f.key.toString()),

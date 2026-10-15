@@ -4,7 +4,9 @@
 
 ### Added
 
-- `signTxWitnessSet` option `allowUnvaluedCollateral` (and `assessCollateral` option `allowUnvalued`): sign collateral that cannot be valued (an input not among `ownUtxos`, no stated total) when the return is the wallet's own or absent. Honoured only when `ownUtxos` is given. The foreign-return refusal and the cap on valued collateral are unchanged. For wallets that show the user an "amount at risk unknown" warning and get an explicit override.
+- `signTxWitnessSet` options `allowUnvaluedCollateral`, `resolvedCollateral` and `ownKeyHashes` (`assessCollateral`: `allowUnvalued`, `resolvedCollateral`, `ownKeyHashes`): sign collateral inputs missing from `ownUtxos` once each is accounted for by a fresh lookup of the collateral inputs by outpoint (address and lovelace) from the wallet's own backend. An input locked by one of the wallet's keys (the payment and stake keys of `ownAddresses`, `ownKeyHashes`, and when signing the signers' keys) or paid to one of `ownAddresses` is valued at the looked-up amount and counts against the cap; an input locked by any other key or by a script adds nothing. An `ownUtxos` entry without a value, a Byron or unreadable looked-up address, or no wallet key to compare with is refused. Honoured only when `ownUtxos` is given; without the option nothing changes from 0.1.0. The foreign-return refusal and the cap stay in force.
+- Error code `COLLATERAL_UNRESOLVED` (retryable; `CollateralAssessment.retryable` and `CollateralDescription.retryable`): with `allowUnvaluedCollateral`, a collateral input is missing from `resolvedCollateral`. A refusal a retry cannot clear (such as the cap) takes precedence.
+- `describeTransaction` takes the same collateral options as `signTxWitnessSet` (`allowForeignCollateralReturn`, `allowUnvaluedCollateral`, `resolvedCollateral`, `ownKeyHashes`), and both map them through one shared function (`collateralCheckOptions`), so `collateral.refusal` reports what signing decides.
 
 ## 0.1.0 — 2026-09-30
 

@@ -22,6 +22,8 @@ export type CardanoErrorCode =
   | 'ADDRESS_NOT_PK'
   | 'CHANGE_ADDRESS_NOT_OWN'
   | 'COLLATERAL_AT_RISK'
+  /** A collateral input could not be looked up (`resolvedCollateral`): retry with a fresh lookup. */
+  | 'COLLATERAL_UNRESOLVED'
   | 'SIGNATURE'
   | 'UNSUPPORTED';
 

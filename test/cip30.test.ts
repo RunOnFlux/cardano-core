@@ -3,6 +3,7 @@ import {
   addressHex,
   assembleTransaction,
   assessCollateral,
+  collateralRisk,
   bytesToHex,
   cArray,
   cBytes,
@@ -10,7 +11,6 @@ import {
   coinValue,
   cTag,
   cUint,
-  defaultCollateralCap,
   encodeCbor,
   enterpriseAddress,
   decodeTransaction,
@@ -31,7 +31,13 @@ import {
   verifyWitness,
   witnessFor,
 } from '../src/index.js';
-import type { CborEncodable, Utxo } from '../src/index.js';
+import type {
+  CborEncodable,
+  CollateralCheckOptions,
+  DescribeOptions,
+  Utxo,
+  WitnessSetOptions,
+} from '../src/index.js';
 import { big, CSL, hex } from './helpers/csl.js';
 import { Rng } from './helpers/random.js';
 import {
@@ -296,48 +302,60 @@ describe('CIP-30 key choice and required signers', () => {
   });
 });
 
-describe('collateral that cannot be valued: allowUnvalued / allowUnvaluedCollateral', () => {
+describe('collateral that cannot be valued: allowUnvaluedCollateral with resolvedCollateral', () => {
   const rng = new Rng(0x60);
   const me = testWallet(rng);
+  const stranger = testWallet(rng);
   const own = [me.address];
   const ownBytes = parseAddress(me.address).bytes;
+  const dappKeyAddr = addressHex(
+    enterpriseAddress(1, { type: 'key', hash: rng.bytes(28) }),
+  );
+  const dappScriptAddr = addressHex(
+    enterpriseAddress(1, { type: 'script', hash: rng.bytes(28) }),
+  );
   const otherBytes = enterpriseAddress(1, {
     type: 'key',
     hash: rng.bytes(28),
   });
-  // A listed UTXO of ours that is not the collateral input.
+  const byronAddr =
+    'Ae2tdPwUPEZFRbyhz3cpfC2CumGzNkFBN2L42rcUc2yjQpEkxDbkPodpMAi';
+  // A listed UTXO of ours that is not used as collateral.
   const ownUtxo = utxo(rng, 10_000_000n);
-  // An own UTXO used as collateral: valued, so the cap applies to it.
-  const bigOwn: Utxo = {
+  const outpointOf = (): Utxo => ({
     txHash: bytesToHex(rng.bytes(32)),
     index: 0,
-    value: coinValue(5_000_000_000n),
-  };
-  const outpoint = (txHash: Uint8Array, index: number) =>
-    cArray([cBytes(txHash), cUint(index)]);
-  /**
-   * A script-style tx whose collateral input is not among the wallet's UTXOs
-   * (dapp-provided, or ours at another address form) unless `collateral` says so.
-   */
-  const unvaluedTx = (opts: {
+    value: coinValue(0n),
+  });
+  /** The collateral input, as fetched again from the chain by outpoint. */
+  const at = (u: Utxo, address: string, coin: bigint): Utxo => ({
+    txHash: u.txHash,
+    index: u.index,
+    value: coinValue(coin),
+    address,
+  });
+  /** A script-style tx spending `collateral` as collateral (a fresh outpoint by default). */
+  const scriptTx = (opts: {
     returnTo?: Uint8Array;
     total?: bigint;
-    collateral?: Utxo;
+    collateral?: Utxo[];
   }): Uint8Array => {
-    const c = opts.collateral;
     const entries: [CborEncodable, CborEncodable][] = [
-      [cUint(0), cTag(258, cArray([outpoint(rng.bytes(32), 0)]))],
+      [
+        cUint(0),
+        cTag(258, cArray([cArray([cBytes(rng.bytes(32)), cUint(0)])])),
+      ],
       [cUint(1), cArray([cArray([cBytes(otherBytes), cUint(2_000_000n)])])],
       [cUint(2), cUint(250_000n)],
       [
         cUint(13),
         cTag(
           258,
-          cArray([
-            c
-              ? outpoint(hexToBytes(c.txHash), c.index)
-              : outpoint(rng.bytes(32), 0),
-          ]),
+          cArray(
+            (opts.collateral ?? [outpointOf()]).map((u) =>
+              cArray([cBytes(hexToBytes(u.txHash)), cUint(u.index)]),
+            ),
+          ),
         ),
       ],
     ];
@@ -349,99 +367,378 @@ describe('collateral that cannot be valued: allowUnvalued / allowUnvaluedCollate
     if (opts.total !== undefined) entries.push([cUint(17), cUint(opts.total)]);
     return assembleTransaction(encodeCbor(cMap(entries)), encodeWitnessSet([]));
   };
-  const assess = (tx: Uint8Array, extra: object) =>
-    assessCollateral(decodeTransaction(tx), { ownAddresses: own, ...extra });
 
-  it('accepts collateral it cannot value, with an own return or none, when ownUtxos was given', () => {
-    for (const t of [unvaluedTx({ returnTo: ownBytes }), unvaluedTx({})]) {
+  /** Wallet-level options, as `signTxWitnessSet` takes them. */
+  type Wallet = Omit<WitnessSetOptions, 'ownAddresses'> & {
+    ownAddresses?: WitnessSetOptions['ownAddresses'];
+  };
+  const toAssess = (w: Wallet): CollateralCheckOptions => ({
+    ownAddresses: w.ownAddresses ?? own,
+    ...(w.ownUtxos ? { ownUtxos: w.ownUtxos } : {}),
+    ...(w.maxCollateralAtRisk !== undefined
+      ? { maxCollateralAtRisk: w.maxCollateralAtRisk }
+      : {}),
+    ...(w.allowForeignCollateralReturn ? { allowForeignReturn: true } : {}),
+    ...(w.allowUnvaluedCollateral ? { allowUnvalued: true } : {}),
+    ...(w.resolvedCollateral
+      ? { resolvedCollateral: w.resolvedCollateral }
+      : {}),
+    ...(w.ownKeyHashes ? { ownKeyHashes: w.ownKeyHashes } : {}),
+  });
+  const toDescribe = (w: Wallet): DescribeOptions => {
+    const { ownAddresses, ...rest } = w;
+    return { addresses: ownAddresses ?? own, ...rest };
+  };
+  const sign = (t: Uint8Array, w: Wallet) =>
+    signTxWitnessSet(t, [me.payment], {
+      ...w,
+      ownAddresses: w.ownAddresses ?? own,
+    });
+
+  type Outcome = 'ok' | 'retry' | RegExp;
+  const CANNOT_TELL = /cannot tell how much collateral is at risk/;
+  const CAP = /would be lost if the scripts fail \(limit \d+\)/;
+
+  /**
+   * Every entry point that makes the collateral decision, judged on the same
+   * case: assessCollateral, collateralRisk, describeTransaction and
+   * signTxWitnessSet must agree.
+   */
+  async function expectEverywhere(
+    t: Uint8Array,
+    w: Wallet,
+    outcome: Outcome,
+    atRisk?: bigint | null,
+  ) {
+    const a = assessCollateral(decodeTransaction(t), toAssess(w));
+    if (outcome === 'ok') expect(a.refusal).toBeNull();
+    else if (outcome === 'retry') {
+      expect(a.refusal).toMatch(/could not be looked up/);
+      expect(a.retryable).toBe(true);
+    } else expect(a.refusal).toMatch(outcome);
+    if (outcome !== 'retry') expect(a.retryable).toBeUndefined();
+    if (atRisk !== undefined) expect(a.atRiskLovelace).toBe(atRisk);
+    expect(collateralRisk(decodeTransaction(t), toAssess(w))).toBe(a.refusal);
+    const d = describeTransaction(t, toDescribe(w));
+    expect(d.collateral.refusal).toBe(a.refusal);
+    expect(d.collateral.atRiskLovelace).toBe(a.atRiskLovelace);
+    expect(d.collateral.retryable).toBe(a.retryable);
+    expect(d.collateralAtRisk).toBe(a.atRiskLovelace);
+    if (outcome === 'ok') {
+      const ws = await sign(t, w);
+      const signed = decodeTransaction(
+        assembleTransaction(decodeTransaction(t).bodyBytes, hexToBytes(ws)),
+      );
+      expect(signed.witnessSet.vkeys).toHaveLength(1);
+      expect(verifyWitness(signed.txId, signed.witnessSet.vkeys[0]!)).toBe(
+        true,
+      );
+    } else {
+      await expect(sign(t, w)).rejects.toMatchObject({
+        code:
+          outcome === 'retry' ? 'COLLATERAL_UNRESOLVED' : 'COLLATERAL_AT_RISK',
+        message: a.refusal,
+      });
+    }
+  }
+  const on = { allowUnvaluedCollateral: true } as const;
+
+  it('option off: 0.1.0 behaviour, resolvedCollateral ignored', async () => {
+    const c = outpointOf();
+    const t = scriptTx({ returnTo: ownBytes, collateral: [c] });
+    const resolvedCollateral = [at(c, dappKeyAddr, 5_000_000n)];
+    await expectEverywhere(t, { ownUtxos: [ownUtxo] }, CANNOT_TELL, null);
+    await expectEverywhere(
+      t,
+      { ownUtxos: [ownUtxo], resolvedCollateral },
+      CANNOT_TELL,
+      null,
+    );
+    expect(
+      assessCollateral(decodeTransaction(t), {
+        ownAddresses: own,
+        ownUtxos: [ownUtxo],
+        resolvedCollateral,
+        ownKeyHashes: [me.paymentKeyHash],
+      }),
+    ).toEqual(
+      assessCollateral(decodeTransaction(t), {
+        ownAddresses: own,
+        ownUtxos: [ownUtxo],
+      }),
+    );
+    // a stated total within the cap is still signed without any lookup
+    await expectEverywhere(
+      scriptTx({ returnTo: ownBytes, total: 2_000_000n }),
+      { ownUtxos: [ownUtxo] },
+      'ok',
+      2_000_000n,
+    );
+  });
+
+  it('is ignored without ownUtxos (the wallet did not look)', async () => {
+    const c = outpointOf();
+    await expectEverywhere(
+      scriptTx({ returnTo: ownBytes, collateral: [c] }),
+      { ...on, resolvedCollateral: [at(c, dappKeyAddr, 5_000_000n)] },
+      CANNOT_TELL,
+      null,
+    );
+  });
+
+  it('accepts dapp collateral resolved to an address the wallet cannot spend from', async () => {
+    for (const addr of [dappKeyAddr, dappScriptAddr]) {
       for (const ownUtxos of [[ownUtxo], [] as Utxo[]]) {
-        const a = assess(t, { ownUtxos, allowUnvalued: true });
-        expect(a.atRiskLovelace).toBeNull();
-        expect(a.refusal).toBeNull();
-        // without the opt-in: refused as before
-        expect(assess(t, { ownUtxos }).refusal).toMatch(
-          /cannot tell how much collateral is at risk/,
+        const c = outpointOf();
+        const w = {
+          ...on,
+          ownUtxos,
+          resolvedCollateral: [at(c, addr, 5_000_000n)],
+        };
+        await expectEverywhere(
+          scriptTx({ returnTo: ownBytes, collateral: [c] }),
+          w,
+          'ok',
+          0n,
         );
+        await expectEverywhere(scriptTx({ collateral: [c] }), w, 'ok', 0n);
       }
     }
   });
 
-  it('is ignored without ownUtxos (the wallet did not look)', () => {
-    const a = assess(unvaluedTx({ returnTo: ownBytes }), {
-      allowUnvalued: true,
-    });
-    expect(a.atRiskLovelace).toBeNull();
-    expect(a.refusal).toMatch(/cannot tell how much collateral is at risk/);
-  });
-
-  it('keeps the foreign-return refusal', () => {
-    const t = unvaluedTx({ returnTo: otherBytes });
-    expect(
-      assess(t, { ownUtxos: [ownUtxo], allowUnvalued: true }).refusal,
-    ).toMatch(/outside this wallet/);
-    // a foreign return accepted for dapp collateral stays at 0 at risk
-    const a = assess(t, {
-      ownUtxos: [ownUtxo],
-      allowUnvalued: true,
-      allowForeignReturn: true,
-    });
-    expect(a.atRiskLovelace).toBe(0n);
-    expect(a.refusal).toBeNull();
-  });
-
-  it('keeps the cap for a stated total and for valued collateral', () => {
-    const stated = assess(
-      unvaluedTx({ returnTo: ownBytes, total: 30_000_000n }),
-      { ownUtxos: [ownUtxo], allowUnvalued: true },
-    );
-    expect(stated.atRiskLovelace).toBe(30_000_000n);
-    expect(stated.refusal).toMatch(/would be lost/);
-    const valued = assess(
-      unvaluedTx({ returnTo: ownBytes, collateral: bigOwn }),
-      { ownUtxos: [ownUtxo, bigOwn], allowUnvalued: true },
-    );
-    expect(valued.atRiskLovelace).toBe(4_995_000_000n);
-    expect(valued.refusal).toMatch(
-      new RegExp(
-        `would be lost if the scripts fail \\(limit ${defaultCollateralCap()}\\)`,
-      ),
-    );
-  });
-
-  it('signTxWitnessSet signs an unvalued collateral input only with the opt-in and ownUtxos', async () => {
-    const raw = unvaluedTx({ returnTo: ownBytes });
-    const tx = bytesToHex(raw);
-    const opts = { ownAddresses: own, ownUtxos: [ownUtxo] };
-    await expect(
-      signTxWitnessSet(tx, [me.payment], opts),
-    ).rejects.toMatchObject({ code: 'COLLATERAL_AT_RISK' });
-    await expect(
-      signTxWitnessSet(tx, [me.payment], {
-        ownAddresses: own,
-        allowUnvaluedCollateral: true,
-      }),
-    ).rejects.toMatchObject({ code: 'COLLATERAL_AT_RISK' });
-    const ws = await signTxWitnessSet(tx, [me.payment], {
-      ...opts,
-      allowUnvaluedCollateral: true,
-    });
-    expect(ws).toMatch(/^[0-9a-f]+$/);
-    const signed = decodeTransaction(
-      assembleTransaction(decodeTransaction(raw).bodyBytes, hexToBytes(ws)),
-    );
-    expect(signed.witnessSet.vkeys).toHaveLength(1);
-    expect(verifyWitness(signed.txId, signed.witnessSet.vkeys[0]!)).toBe(true);
-    // the cap and the foreign-return check still hold under the opt-in
-    for (const t of [
-      unvaluedTx({ returnTo: ownBytes, total: 30_000_000n }),
-      unvaluedTx({ returnTo: otherBytes }),
-    ]) {
-      await expect(
-        signTxWitnessSet(t, [me.payment], {
-          ...opts,
-          allowUnvaluedCollateral: true,
-        }),
-      ).rejects.toMatchObject({ code: 'COLLATERAL_AT_RISK' });
+  it('stale ownUtxos: a wallet input missing from them is valued from the lookup and capped', async () => {
+    // our UTXO at another address form (enterprise) or at a listed address, missing from ownUtxos
+    for (const addr of [me.enterprise, me.address]) {
+      const big = outpointOf();
+      await expectEverywhere(
+        scriptTx({ returnTo: ownBytes, collateral: [big] }),
+        {
+          ...on,
+          ownUtxos: [ownUtxo],
+          resolvedCollateral: [at(big, addr, 5_000_000_000n)],
+        },
+        CAP,
+        4_995_000_000n,
+      );
+      const small = outpointOf();
+      await expectEverywhere(
+        scriptTx({ returnTo: ownBytes, collateral: [small] }),
+        {
+          ...on,
+          ownUtxos: [ownUtxo],
+          resolvedCollateral: [at(small, addr, 8_000_000n)],
+        },
+        'ok',
+        3_000_000n,
+      );
     }
+    // a dapp input next to ours adds nothing to what the wallet can lose
+    const ours = outpointOf();
+    const theirs = outpointOf();
+    await expectEverywhere(
+      scriptTx({ returnTo: ownBytes, collateral: [ours, theirs] }),
+      {
+        ...on,
+        ownUtxos: [ownUtxo],
+        resolvedCollateral: [
+          at(ours, me.enterprise, 8_000_000n),
+          at(theirs, dappKeyAddr, 900_000_000n),
+        ],
+      },
+      'ok',
+      3_000_000n,
+    );
+  });
+
+  it('stale ownUtxos and no lookup: a retryable refusal (COLLATERAL_UNRESOLVED)', async () => {
+    const c = outpointOf();
+    const t = scriptTx({ returnTo: ownBytes, collateral: [c] });
+    await expectEverywhere(t, { ...on, ownUtxos: [ownUtxo] }, 'retry', null);
+    await expectEverywhere(
+      t,
+      { ...on, ownUtxos: [ownUtxo], resolvedCollateral: [] },
+      'retry',
+      null,
+    );
+    // a lookup without the address or the value does not count
+    const noAddress: Utxo = {
+      txHash: c.txHash,
+      index: c.index,
+      value: coinValue(5_000_000n),
+    };
+    await expectEverywhere(
+      t,
+      { ...on, ownUtxos: [ownUtxo], resolvedCollateral: [noAddress] },
+      'retry',
+      null,
+    );
+    // a stated total keeps the rule: every input must still be accounted for
+    await expectEverywhere(
+      scriptTx({ returnTo: ownBytes, total: 2_000_000n, collateral: [c] }),
+      { ...on, ownUtxos: [ownUtxo] },
+      'retry',
+      2_000_000n,
+    );
+    // a refusal a retry cannot clear wins: a listed input already over the cap
+    const listed: Utxo = { ...outpointOf(), value: coinValue(5_000_000_000n) };
+    await expectEverywhere(
+      scriptTx({ returnTo: ownBytes, collateral: [listed, c] }),
+      { ...on, ownUtxos: [ownUtxo, listed] },
+      CAP,
+      null,
+    );
+  });
+
+  it('an ownUtxos entry without a value is refused (wallet-owned and unvalued)', async () => {
+    const c = outpointOf();
+    const outpointOnly = {
+      txHash: c.txHash,
+      index: c.index,
+    } as unknown as Utxo;
+    await expectEverywhere(
+      scriptTx({ returnTo: ownBytes, collateral: [c] }),
+      {
+        ...on,
+        ownUtxos: [ownUtxo, outpointOnly],
+        resolvedCollateral: [at(c, dappKeyAddr, 5_000_000n)],
+      },
+      /listed among the wallet's UTXOs without a value/,
+      null,
+    );
+  });
+
+  it('refuses inputs whose spender it cannot tell', async () => {
+    const c = outpointOf();
+    const t = scriptTx({ returnTo: ownBytes, collateral: [c] });
+    await expectEverywhere(
+      t,
+      {
+        ...on,
+        ownUtxos: [ownUtxo],
+        resolvedCollateral: [at(c, byronAddr, 5_000_000n)],
+      },
+      /cannot tell whether the wallet can spend collateral input .* \(a byron address\)/,
+      null,
+    );
+    await expectEverywhere(
+      t,
+      {
+        ...on,
+        ownUtxos: [ownUtxo],
+        resolvedCollateral: [at(c, 'not an address', 5_000_000n)],
+      },
+      /cannot read the address of collateral input/,
+      null,
+    );
+    await expectEverywhere(
+      t,
+      {
+        ...on,
+        ownUtxos: [ownUtxo],
+        resolvedCollateral: [
+          at(c, dappKeyAddr, 5_000_000n),
+          at(c, me.enterprise, 5_000_000n),
+        ],
+      },
+      /resolved twice with different contents/,
+      null,
+    );
+  });
+
+  it('keeps the foreign-return refusal; dapp collateral with allowForeignCollateralReturn needs the lookup too', async () => {
+    const c = outpointOf();
+    const t = scriptTx({ returnTo: otherBytes, collateral: [c] });
+    const dapp = [at(c, dappKeyAddr, 5_000_000n)];
+    await expectEverywhere(
+      t,
+      { ...on, ownUtxos: [ownUtxo], resolvedCollateral: dapp },
+      /outside this wallet/,
+    );
+    const foreign = {
+      ...on,
+      allowForeignCollateralReturn: true,
+      ownUtxos: [ownUtxo],
+    };
+    await expectEverywhere(
+      t,
+      { ...foreign, resolvedCollateral: dapp },
+      'ok',
+      0n,
+    );
+    await expectEverywhere(t, foreign, 'retry', null);
+    await expectEverywhere(
+      t,
+      { ...foreign, resolvedCollateral: [at(c, me.enterprise, 5_000_000n)] },
+      /outside this wallet.*a collateral input is the wallet's own/,
+    );
+  });
+
+  it('keeps the cap for a stated total', async () => {
+    const c = outpointOf();
+    await expectEverywhere(
+      scriptTx({ returnTo: ownBytes, total: 30_000_000n, collateral: [c] }),
+      {
+        ...on,
+        ownUtxos: [ownUtxo],
+        resolvedCollateral: [at(c, dappKeyAddr, 5_000_000n)],
+      },
+      /30000000 lovelace of collateral would be lost/,
+      30_000_000n,
+    );
+  });
+
+  it('wallet keys: ownAddresses, ownKeyHashes and (when signing) the signers', async () => {
+    const c = outpointOf();
+    const t = scriptTx({ collateral: [c] });
+    const mine = [at(c, me.enterprise, 5_000_000_000n)];
+    // the wallet lists another account only: me.enterprise is not its key to judge
+    const base = {
+      ...on,
+      ownAddresses: [stranger.address],
+      ownUtxos: [ownUtxo],
+      resolvedCollateral: mine,
+    };
+    expect(
+      assessCollateral(decodeTransaction(t), toAssess(base)).refusal,
+    ).toBeNull();
+    expect(
+      describeTransaction(t, toDescribe(base)).collateral.refusal,
+    ).toBeNull();
+    // ...but the signer is me: signing would authorise spending it, so it is valued and capped
+    await expect(sign(t, base)).rejects.toMatchObject({
+      code: 'COLLATERAL_AT_RISK',
+      message: expect.stringMatching(CAP),
+    });
+    // ownKeyHashes (bytes or hex) bring assess and describe to the same answer
+    for (const h of [me.paymentKeyHash, bytesToHex(me.paymentKeyHash)]) {
+      await expectEverywhere(
+        t,
+        { ...base, ownKeyHashes: [h] },
+        CAP,
+        5_000_000_000n,
+      );
+    }
+    // no wallet key at all: the option cannot be honoured
+    const none = {
+      ...on,
+      ownAddresses: [],
+      ownUtxos: [ownUtxo],
+      resolvedCollateral: [at(c, dappKeyAddr, 5_000_000n)],
+    };
+    expect(
+      assessCollateral(decodeTransaction(t), toAssess(none)).refusal,
+    ).toMatch(
+      /cannot tell whether the wallet can spend collateral input .*: no wallet key hashes/,
+    );
+    expect(describeTransaction(t, toDescribe(none)).collateral.refusal).toMatch(
+      /no wallet key hashes/,
+    );
+    // a malformed key hash is an input error
+    expect(() =>
+      assessCollateral(
+        decodeTransaction(t),
+        toAssess({ ...base, ownKeyHashes: ['abcd'] }),
+      ),
+    ).toThrow(/28-byte/);
   });
 });
